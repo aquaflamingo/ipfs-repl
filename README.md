@@ -1,3 +1,3 @@
-# IPFS Repl
-A REPL loop for IPFS 
+# IPFS Shell
+A shell for IPFS 
 
