@@ -1,3 +1,3 @@
-# IPFS Shell
-A shell for IPFS 
+# IPFS REPL
+A basic REPL for IPFS 
 
