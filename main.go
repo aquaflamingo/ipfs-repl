@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	shell "github.com/ipfs/go-ipfs-api"
 )
 
 type Variable struct {
@@ -12,7 +14,9 @@ type Variable struct {
 	Value string
 }
 
-type Runnable func(interface{}) (error, string)
+var locals []Variable
+
+type Runnable func(args []string) (string, error)
 
 type ShellCommand struct {
 	Name        string
@@ -21,51 +25,112 @@ type ShellCommand struct {
 	Run         Runnable
 }
 
-var locals []*Variable
+const localhost string = "localhost:5001"
 
-const (
-	add ShellCommand = &ShellCommand{
+var (
+	cmdAdd *ShellCommand = &ShellCommand{
 		Name:        "Add",
 		Description: "Adds a piece of content to IPFS network",
 		Identifier:  "add",
-		Run: func(filePath string) (error, string) {
-			return nil, nil
+		Run: func(args []string) (string, error) {
+			pathToFile := args[0]
+
+			// Use variable
+			setIfDefined(&pathToFile)
+
+			file, err := os.Open(pathToFile)
+			if err != nil {
+				return "", fmt.Errorf("Unable to read file: %v", err)
+			}
+			reader = bufio.NewReader(file)
+
+			sh := shell.NewShell(localhost)
+			cid, err := sh.Add(reader)
+			if err != nil {
+				return "", fmt.Errorf("error: %v", err)
+			}
+			// ipfs add
+			res := fmt.Sprintf(cid)
+
+			setShellVariable("$$", cid)
+
+			return res, nil
 		},
 	}
 
-	cat ShellCommand = &ShellCommand{
-		Name:        "Cat",
+	cmdCat *ShellCommand = &ShellCommand{
+		Name:        "cmdCat",
 		Description: "Reads an IPFS CID",
 		Identifier:  "cat",
-		Run: func(cid string) (error, string) {
-			return nil, nil
+		Run: func(args []string) (string, error) {
+			cid := args[0]
+			// Use variable
+			setIfDefined(cid)
+
+			res := fmt.Sprintf("hello I catted %s", cid)
+			return res, nil
 		},
 	}
 
-	ls ShellCommand = &ShellCommand{
+	cmdLs *ShellCommand = &ShellCommand{
 		Name:        "List",
 		Description: "Lists currently defined variables in shell",
 		Identifier:  "ls",
-		Run: func() (error, string) {
-			return nil, nil
+		Run: func(args []string) (string, error) {
+			if empty(locals) {
+				// Don't print anything
+				return "", nil
+			}
+
+			var str string
+
+			for _, a := range locals {
+				str = fmt.Sprintf("%s:%s\n", a.Name, a.Value)
+			}
+
+			return str, nil
 		},
 	}
 
-	p ShellCommand = &ShellCommand{
+	cmdPrint *ShellCommand = &ShellCommand{
 		Name:        "Print",
 		Description: "Prints the variable identifier's value",
 		Identifier:  "p",
-		Run: func() (error, string) {
-			return nil, nil
+		Run: func(args []string) (string, error) {
+			ident := args[0]
+
+			i, found := contains(locals, ident)
+
+			if !found {
+				return "", fmt.Errorf("%s is not defined", ident)
+			}
+
+			return locals[i].Value, nil
 		},
 	}
 
-	define ShellCommand = &ShellCommand{
+	cmdDefine *ShellCommand = &ShellCommand{
 		Name:        "Define",
 		Description: "Defines a variable with the value given",
 		Identifier:  "define",
-		Run: func() (error, string) {
-			return nil, nil
+		Run: func(args []string) (string, error) {
+			ident := args[0]
+			val := args[1]
+
+			setShellVariable(ident, val)
+
+			// Print the value to cli
+			return val, nil
+		},
+	}
+
+	cmdExit *ShellCommand = &ShellCommand{
+		Name:        "Exit",
+		Description: "Exits",
+		Identifier:  "exit",
+		Run: func(args []string) (string, error) {
+			os.Exit(0)
+			return "", nil
 		},
 	}
 )
@@ -75,6 +140,7 @@ func main() {
 	fmt.Printf("IPFS Shell: ")
 	fmt.Println("---------------------")
 
+	// REPL loop
 	for {
 		fmt.Print("ipfs > ")
 		text, _ := reader.ReadString('\n')
@@ -82,44 +148,149 @@ func main() {
 		// convert CRLF to LF
 		text = strings.Replace(text, "\n", "", -1)
 
+		if text == "" {
+			continue
+		}
+
 		tokens := strings.Fields(text)
 
-		cmd, err := parseShellCommand(tokens[0])
+		cmd, err := parseShellCommand(tokens)
 
 		if err != nil {
-			// not a shell command
-			// try REPL
-			cmd, err := parseAliasCommands(tokens)
-
+			fmt.Printf("%v", err.Error())
 		} else {
-			// is a shell command
-			// exec shell command
+			args, err := parseCommandArguments(cmd, tokens)
+
+			if err != nil {
+				fmt.Printf("%v", err.Error())
+			} else {
+				res, err := cmd.Run(args)
+				if err != nil {
+					fmt.Println(err)
+				} else {
+					fmt.Println(res)
+				}
+			}
 		}
 	}
 }
 
-func parseAliasCommands(tokens []string) (string, error) {
+func parseCommandArguments(cmd *ShellCommand, tokens []string) ([]string, error) {
+	switch cmd.Identifier {
+	case cmdAdd.Identifier:
+		// Add file to ipfs
+		if len(tokens) < 2 {
+			return []string{}, fmt.Errorf("Error: no path to file given\n")
+		}
+		pathToFile := tokens[1]
+		return []string{pathToFile}, nil
+	case cmdCat.Identifier:
+		// Cat file from ipfs
+		if len(tokens) < 2 {
+			return []string{}, fmt.Errorf("Error: no content identifier given\n")
+		}
+
+		cid := tokens[1]
+		return []string{cid}, nil
+	case cmdDefine.Identifier:
+		// Define new variable in locals
+		if len(tokens) < 3 {
+			return []string{}, fmt.Errorf("Error: invalid assignment expression\n")
+		} else if len(tokens) > 2 && tokens[1] != "=" {
+			return []string{}, fmt.Errorf("Error: invalid assignment expression\n")
+		}
+
+		ident := tokens[0]
+		val := tokens[2]
+		return []string{ident, val}, nil
+	case cmdLs.Identifier, cmdExit.Identifier:
+		// List all variables in locals
+		return []string{}, nil
+	case cmdPrint.Identifier:
+		// Print a variable
+		return []string{tokens[0]}, nil
+	default:
+		return nil, fmt.Errorf("Invalid arguments")
+	}
+}
+
+func parseAliasCommands(tokens []string) (*ShellCommand, error) {
+	// If first token is only value, check if defined
+	_, found := contains(locals, tokens[0])
+
+	if len(tokens) == 1 && found {
+		// This is a variable that is defined, print it
+		return cmdPrint, nil
+		// If three tokens check for defintion
+	} else if len(tokens) == 3 && tokens[1] == "=" {
+		return cmdDefine, nil
+	} else {
+		// No alias
+		return nil, fmt.Errorf("Invalid shell command")
+	}
+}
+
+func parseShellCommand(tokens []string) (*ShellCommand, error) {
 	// if <identifier> =
 	// 		> Define new local variable
 	// elsif <identifier>
 	// 		> Print new local variable
 	// else
 	// 		> Error
+	identifer := tokens[0]
+
+	switch identifer {
+	case cmdAdd.Identifier:
+		return cmdAdd, nil
+	case cmdCat.Identifier:
+		return cmdCat, nil
+	case cmdLs.Identifier:
+		return cmdLs, nil
+	case cmdPrint.Identifier:
+		return cmdPrint, nil
+	case cmdDefine.Identifier:
+		return cmdDefine, nil
+	case cmdExit.Identifier:
+		return cmdExit, nil
+	default:
+		return parseAliasCommands(tokens)
+	}
 }
 
-func parseShellCommand(str string) (ShellCommand, error) {
-	switch str {
-	case add.Identifier:
-		return add, nil
-	case cat.Identifier:
-		return cat, nil
-	case ls.Identifier:
-		return ls, nil
-	case p.Identifier:
-		return p, nil
-	case define.Identifier:
-		return define, nil
-	default:
-		return "", error.Error("Invalid shell command")
+func empty(arr []Variable) bool {
+	return len(arr) < 1
+}
+
+func contains(arr []Variable, str string) (int, bool) {
+	for i, a := range arr {
+		if a.Name == str {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+func setIfDefined(strPtr *string) {
+	// Use variable
+	valIndex, valFound := contains(locals, *strPtr)
+
+	if found {
+		strPtr = locals[valIndex].Value
+	}
+}
+
+func setShellVariable(ident string, value string) {
+	tmpVal := value
+
+	setIfDefined(&tmpVal)
+
+	index, found := contains(locals, ident)
+
+	if found {
+		// Set the variable
+		locals[index] = Variable{Name: ident, Value: tmpVal}
+	} else {
+		// Add the variable
+		locals = append(locals, Variable{Name: ident, Value: tmpVal})
 	}
 }
