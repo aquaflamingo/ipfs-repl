@@ -3,10 +3,11 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
-	shell "github.com/ipfs/go-ipfs-api"
+	ipfs "github.com/ipfs/go-ipfs-api"
 )
 
 type Variable struct {
@@ -16,7 +17,7 @@ type Variable struct {
 
 var locals []Variable
 
-type Runnable func(args []string) (string, error)
+type Runnable func(args []string, sh *ipfs.Shell) (string, error)
 
 type ShellCommand struct {
 	Name        string
@@ -32,7 +33,7 @@ var (
 		Name:        "Add",
 		Description: "Adds a piece of content to IPFS network",
 		Identifier:  "add",
-		Run: func(args []string) (string, error) {
+		Run: func(args []string, sh *ipfs.Shell) (string, error) {
 			pathToFile := args[0]
 
 			// Use variable
@@ -42,9 +43,8 @@ var (
 			if err != nil {
 				return "", fmt.Errorf("Unable to read file: %v", err)
 			}
-			reader = bufio.NewReader(file)
+			reader := bufio.NewReader(file)
 
-			sh := shell.NewShell(localhost)
 			cid, err := sh.Add(reader)
 			if err != nil {
 				return "", fmt.Errorf("error: %v", err)
@@ -62,13 +62,25 @@ var (
 		Name:        "cmdCat",
 		Description: "Reads an IPFS CID",
 		Identifier:  "cat",
-		Run: func(args []string) (string, error) {
+		Run: func(args []string, sh *ipfs.Shell) (string, error) {
 			cid := args[0]
 			// Use variable
-			setIfDefined(cid)
+			setIfDefined(&cid)
 
-			res := fmt.Sprintf("hello I catted %s", cid)
-			return res, nil
+			reader, err := sh.Cat(cid)
+			defer reader.Close()
+
+			if err != nil {
+				return "", err
+			}
+
+			buf := new(strings.Builder)
+			_, err = io.Copy(buf, reader)
+			if err != nil {
+				return "", err
+			}
+
+			return buf.String(), nil
 		},
 	}
 
@@ -76,7 +88,7 @@ var (
 		Name:        "List",
 		Description: "Lists currently defined variables in shell",
 		Identifier:  "ls",
-		Run: func(args []string) (string, error) {
+		Run: func(args []string, sh *ipfs.Shell) (string, error) {
 			if empty(locals) {
 				// Don't print anything
 				return "", nil
@@ -96,7 +108,7 @@ var (
 		Name:        "Print",
 		Description: "Prints the variable identifier's value",
 		Identifier:  "p",
-		Run: func(args []string) (string, error) {
+		Run: func(args []string, sh *ipfs.Shell) (string, error) {
 			ident := args[0]
 
 			i, found := contains(locals, ident)
@@ -113,7 +125,7 @@ var (
 		Name:        "Define",
 		Description: "Defines a variable with the value given",
 		Identifier:  "define",
-		Run: func(args []string) (string, error) {
+		Run: func(args []string, sh *ipfs.Shell) (string, error) {
 			ident := args[0]
 			val := args[1]
 
@@ -128,7 +140,7 @@ var (
 		Name:        "Exit",
 		Description: "Exits",
 		Identifier:  "exit",
-		Run: func(args []string) (string, error) {
+		Run: func(args []string, sh *ipfs.Shell) (string, error) {
 			os.Exit(0)
 			return "", nil
 		},
@@ -137,8 +149,9 @@ var (
 
 func main() {
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Printf("IPFS Shell: ")
-	fmt.Println("---------------------")
+	fmt.Println("IPFS REPL v0.1")
+
+	sh := ipfs.NewShell(localhost)
 
 	// REPL loop
 	for {
@@ -164,7 +177,7 @@ func main() {
 			if err != nil {
 				fmt.Printf("%v", err.Error())
 			} else {
-				res, err := cmd.Run(args)
+				res, err := cmd.Run(args, sh)
 				if err != nil {
 					fmt.Println(err)
 				} else {
@@ -226,7 +239,7 @@ func parseAliasCommands(tokens []string) (*ShellCommand, error) {
 		return cmdDefine, nil
 	} else {
 		// No alias
-		return nil, fmt.Errorf("Invalid shell command")
+		return nil, fmt.Errorf("Invalid shell command\n")
 	}
 }
 
@@ -274,8 +287,8 @@ func setIfDefined(strPtr *string) {
 	// Use variable
 	valIndex, valFound := contains(locals, *strPtr)
 
-	if found {
-		strPtr = locals[valIndex].Value
+	if valFound {
+		*strPtr = locals[valIndex].Value
 	}
 }
 
