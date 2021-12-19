@@ -3,7 +3,7 @@ PROJECT=ipfs_repl
 all: build
 
 build:
-	go build -o bin/main main.go
+	go build -o bin/main ./...
 
 start: 
 	@./bin/main
