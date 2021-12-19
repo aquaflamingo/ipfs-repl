@@ -47,12 +47,12 @@ func main() {
 
 		tokens := strings.Fields(text)
 
-		cmd, err := parseShellCommand(tokens)
+		cmd, err := ParseShellCommand(tokens)
 
 		if err != nil {
 			fmt.Printf("%v", err.Error())
 		} else {
-			args, err := parseCommandArguments(cmd, tokens)
+			args, err := ParseCommandArguments(cmd, tokens)
 
 			if err != nil {
 				fmt.Printf("%v", err.Error())

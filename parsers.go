@@ -2,7 +2,7 @@ package main
 
 import "fmt"
 
-func parseCommandArguments(cmd *ShellCommand, tokens []string) ([]string, error) {
+func ParseCommandArguments(cmd *ShellCommand, tokens []string) ([]string, error) {
 	switch cmd.Identifier {
 	case cmdAdd.Identifier:
 		// Add file to ipfs
@@ -57,7 +57,7 @@ func parseAliasCommands(tokens []string) (*ShellCommand, error) {
 	}
 }
 
-func parseShellCommand(tokens []string) (*ShellCommand, error) {
+func ParseShellCommand(tokens []string) (*ShellCommand, error) {
 	identifer := tokens[0]
 
 	switch identifer {
